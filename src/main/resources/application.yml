@@ -30,7 +30,7 @@ spring:
         api-key: ${GEMINI_API_KEY}
         chat:
           options:
-            model: gemini-1.5-flash
+            model: models/gemini-2.5-flash
             temperature: 0.2
         embedding:
           api-key: ${GEMINI_API_KEY}
