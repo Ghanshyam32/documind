@@ -1,6 +1,8 @@
-# Empty Stack — RAG Document Intelligence
+# DocuMind — RAG Document Intelligence
 
-A production-ready full-stack app that lets you upload documents and ask questions in plain English, with AI-powered answers and source citations.
+[![CI](https://github.com/Ghanshyam32/documind/actions/workflows/ci.yml/badge.svg)](https://github.com/Ghanshyam32/documind/actions/workflows/ci.yml)
+
+A full-stack Spring Boot app that lets you upload documents and ask questions in plain English, with AI-powered answers and source citations. Each user's documents and vector search are isolated behind JWT auth.
 
 Upload a PDF or TXT → ask questions → get answers with source citations.
 
@@ -14,11 +16,11 @@ Upload a PDF or TXT → ask questions → get answers with source citations.
 
 | Layer | Technology |
 |---|---|
-| Language | Java 17 |
+| Language | Java 21 |
 | Framework | Spring Boot 3.3.5 |
 | AI Framework | Spring AI 1.1.1 |
 | Embedding Model | Gemini `gemini-embedding-001` (3072 dims) |
-| LLM | Gemini 2.0 Flash |
+| LLM | Gemini 2.5 Flash |
 | Vector Store | PostgreSQL + pgvector |
 | PDF Parsing | Apache PDFBox 3.x |
 | DB Migrations | Flyway |
@@ -32,7 +34,7 @@ Upload a PDF or TXT → ask questions → get answers with source citations.
 
 ```
 User uploads PDF
-  → chunked into 500-token pieces
+  → chunked into 500-word pieces
   → each chunk embedded into a vector
 
 User asks a question
@@ -65,7 +67,8 @@ src/main/java/com/ghanshyam/empty_stack/
 │   └── DocumentChunkRepository.java
 ├── security/
 │   ├── SecurityConfig.java
-│   └── JwtUtil.java
+│   ├── JwtService.java
+│   └── JwtAuthFilter.java
 └── dto/
     ├── ChatRequest.java
     ├── ChatResponse.java
@@ -86,7 +89,9 @@ src/main/resources/
 The entire stack — app, PostgreSQL with pgvector — is wired up in `docker-compose.yml`. One command starts everything:
 
 ```bash
-# 1. Add your Gemini API key to docker-compose.yml (GEMINI_API_KEY env var)
+# 1. Export your keys (docker-compose.yml reads them from the environment)
+export GEMINI_API_KEY=your-key
+export JWT_SECRET=$(openssl rand -base64 32)
 # 2. Start everything
 docker compose up --build
 ```
@@ -101,15 +106,15 @@ No separate frontend server needed — the UI is served directly by Spring Boot 
 
 ### Prerequisites
 
-- Java 17+
+- Java 21+
 - Docker Desktop (for PostgreSQL only)
 - Gemini API key (free at [aistudio.google.com](https://aistudio.google.com))
 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/Ghanshyam32/rag-document-intelligence.git
-cd rag-document-intelligence
+git clone https://github.com/Ghanshyam32/documind.git
+cd documind
 ```
 
 ### 2. Configure
@@ -122,7 +127,7 @@ copy src\main\resources\application.yml.example src\main\resources\application.y
 ### 3. Start PostgreSQL
 
 ```bash
-docker compose up -d db
+docker compose up -d postgres
 ```
 
 ### 4. Run the app
@@ -209,6 +214,27 @@ curl -X POST http://localhost:8080/api/chat/ask \
 
 ## Chunking Strategy
 
-- **Chunk size:** 500 tokens
-- **Overlap:** 50 tokens — prevents context loss at chunk boundaries
+- **Chunk size:** 500 words
+- **Overlap:** 50 words — prevents context loss at chunk boundaries
 - Split on whitespace; overlap ensures sentences aren't cut mid-thought
+
+---
+
+## Testing
+
+```bash
+mvn test
+```
+
+Unit tests cover the parts of the pipeline that are easy to get subtly wrong:
+
+- **Chunking** — overlap between consecutive chunks, no redundant tail chunk, every word covered, blank input, invalid overlap settings, UTF-8 text and PDF extraction (NUL bytes stripped, since PostgreSQL rejects them)
+- **JWT** — token round-trip, wrong user, token signed with another key, expired token
+
+Tests run on every push via GitHub Actions.
+
+## Roadmap
+
+- Integration tests against a real pgvector instance with Testcontainers
+- Async ingestion for large PDFs (upload returns immediately, indexing runs in the background)
+- Hybrid search (keyword + vector) and re-ranking
