@@ -1,5 +1,6 @@
 package com.ghanshyam.empty_stack.service;
 
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.beans.factory.annotation.Value;
@@ -7,59 +8,75 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
+/**
+ * Extracts text from uploaded PDF/TXT files and splits it into overlapping
+ * word-based chunks for embedding.
+ */
 @Service
 public class ChunkingService {
 
-    @Value("${app.rag.chunk-size:500}")
-    private int chunkSize;
+    private final int chunkSize;
+    private final int chunkOverlap;
 
-    @Value("${app.rag.chunk-overlap:50}")
-    private int chunkOverlap;
-
-    // Entry point — give it a file, get back list of text chunks
-    public List<String> chunkFile(MultipartFile file) throws IOException {
-        String text = extractText(file);
-        return splitIntoChunks(text);
+    public ChunkingService(@Value("${app.rag.chunk-size:500}") int chunkSize,
+                           @Value("${app.rag.chunk-overlap:50}") int chunkOverlap) {
+        if (chunkSize <= 0) {
+            throw new IllegalArgumentException("chunk-size must be positive");
+        }
+        if (chunkOverlap < 0 || chunkOverlap >= chunkSize) {
+            // overlap >= size would never advance the window (infinite loop)
+            throw new IllegalArgumentException("chunk-overlap must be >= 0 and smaller than chunk-size");
+        }
+        this.chunkSize = chunkSize;
+        this.chunkOverlap = chunkOverlap;
     }
 
-    // Step 1: Extract raw text from PDF or TXT
-    private String extractText(MultipartFile file) throws IOException {
-        String filename = file.getOriginalFilename();
+    /** Entry point: give it a file, get back a list of text chunks. */
+    public List<String> chunkFile(MultipartFile file) throws IOException {
+        return splitIntoChunks(extractText(file));
+    }
 
-        if (filename != null && filename.endsWith(".pdf")) {
-            // PDFBox reads the PDF and pulls out all text
-            try (PDDocument doc = org.apache.pdfbox.Loader.loadPDF(file.getBytes())) {
-                PDFTextStripper stripper = new PDFTextStripper();
-                return stripper.getText(doc);
+    /** Extracts raw text from a PDF or plain-text file. */
+    String extractText(MultipartFile file) throws IOException {
+        String filename = file.getOriginalFilename();
+        String text;
+        if (filename != null && filename.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            try (PDDocument doc = Loader.loadPDF(file.getBytes())) {
+                text = new PDFTextStripper().getText(doc);
             }
         } else {
-            // Plain text file — just read it directly
-            return new String(file.getBytes());
+            text = new String(file.getBytes(), StandardCharsets.UTF_8);
         }
+        // PostgreSQL TEXT columns reject NUL bytes, which some PDFs contain
+        return text.replace("\u0000", "");
     }
 
-    // Step 2: Split text into overlapping chunks
-    // Why overlap? So sentences at the boundary aren't cut off
-    // e.g. chunk 1 ends at word 500, chunk 2 starts at word 450
-    private List<String> splitIntoChunks(String text) {
+    /**
+     * Splits text into chunks of {@code chunkSize} words where consecutive chunks
+     * share {@code chunkOverlap} words, so sentences on a boundary keep their context.
+     */
+    List<String> splitIntoChunks(String text) {
         List<String> chunks = new ArrayList<>();
-        String[] words = text.split("\\s+"); // split on whitespace
-
-        int start = 0;
-        while (start < words.length) {
-            int end = Math.min(start + chunkSize, words.length);
-
-            // Join words back into a string
-            String chunk = String.join(" ", java.util.Arrays.copyOfRange(words, start, end));
-            chunks.add(chunk.trim());
-
-            // Move forward by (chunkSize - overlap) so next chunk shares last N words
-            start += (chunkSize - chunkOverlap);
+        if (text == null || text.isBlank()) {
+            return chunks;
         }
 
+        String[] words = text.strip().split("\\s+");
+        int step = chunkSize - chunkOverlap;
+
+        for (int start = 0; start < words.length; start += step) {
+            int end = Math.min(start + chunkSize, words.length);
+            chunks.add(String.join(" ", Arrays.copyOfRange(words, start, end)));
+            if (end == words.length) {
+                break; // last window reached; avoid emitting a redundant tail chunk
+            }
+        }
         return chunks;
     }
 }
